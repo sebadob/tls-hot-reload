@@ -25,6 +25,7 @@ check:
 
     echo 'Checking minimal versions'
     cargo minimal-versions check
+    cargo update
 
 # verifies the MSRV
 msrv-verify:
@@ -32,7 +33,7 @@ msrv-verify:
 
 # find's the new MSRV, if it needs a bump
 msrv-find:
-    cargo msrv --min 1.70.0
+    cargo msrv --min 1.85.0
 
 # verify thats everything is good
 verify: check msrv-verify
@@ -60,17 +61,11 @@ publish: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    # We must delete the pre-built binaries to not push them to crates.io
-    rm -rf out/*
-
     cargo publish
 
 # dry run for publishing to crates.io
 publish-dry: verfiy-is-clean
     #!/usr/bin/env bash
     set -euxo pipefail
-
-    # We must delete the pre-built binaries to not push them to crates.io
-    rm -rf out/*
 
     cargo publish --dry-run

@@ -5,6 +5,9 @@ use rustls::sign::CertifiedKey;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Used to create a new `CertifiedKeysWatched`. If you want to resolve a wildcard certificate, you
+/// need to specify it for each SNI. It does not resolve SNIs like `*.example.com`, only absolute
+/// ones.
 #[derive(Debug)]
 pub struct BundleCert {
     pub sni: String,

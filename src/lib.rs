@@ -7,8 +7,11 @@ use rustls::crypto::CryptoProvider;
 #[cfg(all(not(feature = "ring"), not(feature = "aws_lc_rs")))]
 compile_error!("You must activate either `ring` or `aws_lc_rs`");
 
-pub mod certified_key;
-pub mod certified_keys;
+pub use certified_key::CertifiedKeyWatched;
+pub use certified_keys::{BundleCert, CertifiedKeysWatched};
+
+mod certified_key;
+mod certified_keys;
 pub mod error;
 
 /// Creates a simple `rustls::ServerConfig` with automatic hot-reloading of TLS certificates
