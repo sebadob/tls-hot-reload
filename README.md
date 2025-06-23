@@ -25,5 +25,5 @@ let ck = CertifiedKeyWatched::new(key_path, cert_path).await?;
 ServerConfig::builder().with_no_client_auth().with_cert_resolver(ck)
 ```
 
-You can also use `CertifiedKeysWatched::new()` to provide a `Vec<_>` of certificates / paths which then will be resolved
-via SNI from the `ClientHello`.
+You can also use `CertifiedKeysWatched::new()` to provide a `Vec<BundleCert>` of certificates / paths which then will be
+resolved via SNI from the `ClientHello`.
