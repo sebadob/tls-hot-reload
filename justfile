@@ -25,6 +25,7 @@ check:
 
     echo 'Checking minimal versions'
     cargo minimal-versions check
+    cargo update
 
 # verifies the MSRV
 msrv-verify:
