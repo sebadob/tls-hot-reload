@@ -1,0 +1,15 @@
+[package]
+name = "simple-hot-reload"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tls-hot-reload = { path = "../.." }
+
+actix-web = { version = "4", features = ["rustls-0_23"] }
+anyhow = "1.0.98"
+rcgen = { version = "0.13", features = ["crypto"] }
+time = "0.3.41"
+tokio = { version = "1.45.1", features = ["fs"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
