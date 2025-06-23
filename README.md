@@ -1,11 +1,11 @@
 # tls-hot-reload
 
-This is a tiny crate that brings wait- and lock-free TLS hot-reloading to `rustls`. It has as minimal overhead and no
+This is a tiny crate that brings wait- and lock-free TLS hot-reloading to `rustls`. It has minimal overhead and no
 internal locking when it comes to resolving TLS certificates.
 
 The main thing it provides is `CertifiedKeyWatched`. It implements `rustls::server::ResolvesServerCert` and can be used
 directly inside a `rustls::ServerConfig` as a certificate resolver. When you create a new `CertifiedKeyWatched`, it
-automatically spawns file watchers in the background that listen to modifications to these files and if they notice any,
+automatically spawns file watchers in the background that listen to modifications on these files and if they notice any,
 they will try to reload TLS certificates without any interruption in service.
 
 The implementation is completely framework / server agnostic and works anywhere, where you can provide a
