@@ -6,11 +6,11 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
-use rustls_pemfile::Item;
-use std::io::BufReader;
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject;
+use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::{fs, iter};
 use tokio::sync::Mutex;
 use tokio::task;
 use tracing::{debug, error, info};
@@ -60,46 +60,35 @@ impl CertifiedKeyWatched {
     }
 
     fn try_load(key_path: &str, cert_path: &str) -> Result<Arc<CertifiedKey>, Error> {
-        let key_file = fs::read(key_path)?;
         let key = if key_path.ends_with(".der") {
+            let key_file = fs::read(key_path)?;
             PrivateKeyDer::try_from(key_file).map_err(|err| Error::PrivateKey(err.to_string()))?
         } else {
-            let mut reader = BufReader::new(key_file.as_slice());
-            let mut key = None;
-            for item in iter::from_fn(|| rustls_pemfile::read_one(&mut reader).transpose()).take(1)
-            {
-                match item? {
-                    Item::Pkcs1Key(k) => {
-                        key = Some(PrivateKeyDer::Pkcs1(k));
-                    }
-                    Item::Pkcs8Key(k) => {
-                        key = Some(PrivateKeyDer::Pkcs8(k));
-                    }
-                    Item::Sec1Key(k) => {
-                        key = Some(PrivateKeyDer::Sec1(k));
-                    }
-                    _ => panic!("Expected a private PEM key in {}", key_path),
-                }
-            }
-            match key {
-                None => {
-                    return Err(Error::NotFound("To TLS key found"));
-                }
-                Some(k) => k,
-            }
+            PrivateKeyDer::from_pem_file(key_path)
+                .map_err(|err| Error::PrivateKey(err.to_string()))?
         };
 
         let certs_file = fs::read(cert_path)?;
-        let mut certs_reader = BufReader::new(certs_file.as_slice());
         let mut cert_chain = Vec::with_capacity(2);
-        for res in rustls_pemfile::certs(&mut certs_reader) {
-            match res {
-                Ok(cert) => {
-                    cert_chain.push(cert);
-                }
-                Err(err) => return Err(Error::InvalidData(err.to_string())),
+
+        if cert_path.ends_with(".der") {
+            let cert = CertificateDer::from(certs_file);
+            if cert.is_empty() {
+                return Err(Error::InvalidData(format!(
+                    "Cannot parse certificate from {cert_path}"
+                )));
             }
-        }
+            cert_chain.push(cert);
+        } else {
+            for res in CertificateDer::pem_slice_iter(&certs_file) {
+                match res {
+                    Ok(cert) => {
+                        cert_chain.push(cert);
+                    }
+                    Err(err) => return Err(Error::InvalidData(err.to_string())),
+                }
+            }
+        };
 
         let provider = CryptoProvider::get_default().expect("rustls CryptoProvider not installed");
         let ck = CertifiedKey::from_der(cert_chain, key, provider)
@@ -143,5 +132,30 @@ impl CertifiedKeyWatched {
         watcher.watch(Path::new(&cert_path), RecursiveMode::NonRecursive)?;
 
         Ok(watcher)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::install_crypto_provider;
+
+    #[test]
+    fn load_der() {
+        install_crypto_provider();
+
+        let ck = CertifiedKeyWatched::try_load("test_data/key.der", "test_data/certs.der").unwrap();
+        ck.keys_match().unwrap();
+        // TODO the DER loading currently can only load the first certificate and not a full chain
+        assert_eq!(ck.cert.len(), 1);
+    }
+
+    #[test]
+    fn load_pem() {
+        install_crypto_provider();
+
+        let ck = CertifiedKeyWatched::try_load("test_data/key.pem", "test_data/certs.pem").unwrap();
+        ck.keys_match().unwrap();
+        assert_eq!(ck.cert.len(), 2);
     }
 }
