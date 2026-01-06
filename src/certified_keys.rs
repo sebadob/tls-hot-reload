@@ -24,6 +24,7 @@ pub struct CertifiedKeysWatched {
 }
 
 impl ResolvesServerCert for CertifiedKeysWatched {
+    #[inline]
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let sni = hello.server_name()?;
         let key = self.keys.get(sni)?;

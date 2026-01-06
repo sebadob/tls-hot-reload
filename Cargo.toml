@@ -1,6 +1,6 @@
 [package]
 name = "tls-hot-reload"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org>"]
@@ -22,8 +22,10 @@ aws_lc_rs = ["rustls/aws_lc_rs"]
 [dependencies]
 arc-swap = "1.7"
 notify = "8"
-rustls = { version = "0.23.23", default-features = false, features = ["logging", "prefer-post-quantum", "std", "tls12"] }
-rustls-pemfile = "2"
+rustls = { version = "0.23.36", default-features = false, features = [
+    "logging", "prefer-post-quantum", "std", "tls12"
+] }
+rustls-pki-types = "1.13.2"
 thiserror = "2"
 tokio = { version = "1.28.2", default-features = false, features = ["sync", "rt"] }
 tracing = "0.1"

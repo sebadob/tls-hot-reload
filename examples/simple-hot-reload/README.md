@@ -20,4 +20,4 @@ If you don't have this available, you can also use your browser, but keep in min
 private windows or different browsers to actually see the newly created certificates, because if you just refresh in
 the same window, you probably still have a valid TLS session in the background, which is based on the old certificate.
 
-> Note: The `openssl s_client` command does not return by default and you need to CTRL + C it.
+> Note: The `openssl s_client` command does not return by default, and you need to CTRL + C it.
