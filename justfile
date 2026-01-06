@@ -18,14 +18,14 @@ check:
     #cargo +nightly clippy -- -D warnings
     cargo clippy -- -D warnings
 
+    echo 'Checking minimal versions'
+        cargo minimal-versions check
+        cargo update
+
     cd examples/simple-hot-reload
     cargo clippy -- -D warnings
 
     cd ../..
-
-    echo 'Checking minimal versions'
-    cargo minimal-versions check
-    cargo update
 
 # verifies the MSRV
 msrv-verify:
