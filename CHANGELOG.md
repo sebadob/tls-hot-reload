@@ -1,4 +1,4 @@
-## v0.2.1
+## v0.3.0
 
 Bumps `aws-lc` dependencies to mitigate some security vulnerabilities.
 
