@@ -1,6 +1,6 @@
 [package]
 name = "tls-hot-reload"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85.0"
 authors = ["Sebastian Dobe <sebastiandobe@mailbox.org>"]
@@ -17,7 +17,7 @@ doctest = false
 [features]
 default = ["ring"]
 ring = ["rustls/ring"]
-aws_lc_rs = ["rustls/aws_lc_rs"]
+aws_lc_rs = ["dep:aws-lc-rs", "dep:aws-lc-sys", "rustls/aws_lc_rs"]
 
 [dependencies]
 arc-swap = "1.7"
@@ -29,3 +29,8 @@ rustls-pki-types = "1.13.2"
 thiserror = "2"
 tokio = { version = "1.28.2", default-features = false, features = ["sync", "rt"] }
 tracing = "0.1"
+
+# Necessary to fix security issuesin current versions.
+# Wil probably automatically be done once rustls hits v0.24
+aws-lc-sys = { version = "0.39", optional = true }
+aws-lc-rs = { version = "1.16.2", optional = true }
