@@ -34,3 +34,7 @@ tracing = "0.1"
 # Wil probably automatically be done once rustls hits v0.24
 aws-lc-sys = { version = "0.39", optional = true }
 aws-lc-rs = { version = "1.16.2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.28.2", features = ["macros", "rt", "time"] }

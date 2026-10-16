@@ -131,6 +131,21 @@ impl CertifiedKeyWatched {
         watcher.watch(Path::new(&key_path), RecursiveMode::NonRecursive)?;
         watcher.watch(Path::new(&cert_path), RecursiveMode::NonRecursive)?;
 
+        // Atomic replacements can detach file watches from the current inode.
+        // Parent watches also observe Kubernetes projected Secret symlink swaps.
+        let key_parent = Path::new(&key_path)
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let cert_parent = Path::new(&cert_path)
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        watcher.watch(key_parent, RecursiveMode::NonRecursive)?;
+        if cert_parent != key_parent {
+            watcher.watch(cert_parent, RecursiveMode::NonRecursive)?;
+        }
+
         Ok(watcher)
     }
 }
