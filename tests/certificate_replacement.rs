@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use std::{fs, os::unix::fs::symlink, path::Path, sync::Once, time::Duration};
 use tls_hot_reload::CertifiedKeyWatched;
 use tokio::time::{Instant, sleep};
@@ -31,11 +32,18 @@ async fn reader(
     .await?)
 }
 
-async fn check_replacements(projected: bool, atomic: bool) -> TestResult {
+#[derive(Debug, Clone, Copy)]
+enum Replacement {
+    Projected,
+    Atomic,
+    InPlace,
+}
+
+async fn check_replacements(replacement: Replacement) -> TestResult {
     let temporary = tempfile::tempdir()?;
     let mounted = temporary.path().join("mounted");
     fs::create_dir(&mounted)?;
-    if projected {
+    if matches!(replacement, Replacement::Projected) {
         write_pair(&mounted.join("revision-0"), CERTS[0])?;
         symlink("revision-0", mounted.join("..data"))?;
         symlink("..data/tls.key", mounted.join("tls.key"))?;
@@ -46,16 +54,16 @@ async fn check_replacements(projected: bool, atomic: bool) -> TestResult {
     let watched = reader(&mounted).await?;
     let initial = watched.cloned().cert[0].clone();
     for (revision, cert) in CERTS.iter().enumerate().skip(1) {
-        let reference = temporary.path().join(format!("reference-{revision}"));
-        write_pair(&reference, cert)?;
-        let expected = reader(&reference).await?.cloned().cert[0].clone();
+        let expected = CertificateDer::pem_slice_iter(cert)
+            .next()
+            .ok_or("missing test certificate")??;
         assert_ne!(initial, expected);
-        if projected {
+        if matches!(replacement, Replacement::Projected) {
             write_pair(&mounted.join(format!("revision-{revision}")), cert)?;
             symlink(format!("revision-{revision}"), mounted.join("..data_tmp"))?;
             fs::rename(mounted.join("..data_tmp"), mounted.join("..data"))?;
             fs::remove_dir_all(mounted.join(format!("revision-{}", revision - 1)))?;
-        } else if atomic {
+        } else if matches!(replacement, Replacement::Atomic) {
             fs::write(mounted.join("tls.crt.tmp"), cert)?;
             fs::rename(mounted.join("tls.crt.tmp"), mounted.join("tls.crt"))?;
         } else {
@@ -68,7 +76,7 @@ async fn check_replacements(projected: bool, atomic: bool) -> TestResult {
         assert_eq!(
             watched.cloned().cert[0],
             expected,
-            "certificate revision {revision} was not loaded (projected={projected}, atomic={atomic})"
+            "certificate revision {revision} was not loaded ({replacement:?})"
         );
     }
     Ok(())
@@ -76,15 +84,15 @@ async fn check_replacements(projected: bool, atomic: bool) -> TestResult {
 
 #[tokio::test]
 async fn reloads_after_two_projected_secret_rotations() -> TestResult {
-    check_replacements(true, true).await
+    check_replacements(Replacement::Projected).await
 }
 
 #[tokio::test]
 async fn reloads_after_two_atomic_file_replacements() -> TestResult {
-    check_replacements(false, true).await
+    check_replacements(Replacement::Atomic).await
 }
 
 #[tokio::test]
 async fn preserves_in_place_certificate_reloading() -> TestResult {
-    check_replacements(false, false).await
+    check_replacements(Replacement::InPlace).await
 }

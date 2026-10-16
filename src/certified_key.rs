@@ -40,6 +40,11 @@ impl CertifiedKeyWatched {
         self.cert_key.load_full()
     }
 
+    /// Load a key/certificate pair and register native file and directory watches.
+    ///
+    /// Both containing directories must permit watch registration. On Linux this
+    /// requires directory read access even when the files themselves are readable.
+    /// Failure to register any required watch is returned to the caller.
     pub async fn new(key_path: String, cert_path: String) -> Result<Arc<Self>, Error> {
         let kp_cloned = key_path.clone();
         let cp_cloned = cert_path.clone();
