@@ -111,11 +111,27 @@ impl CertifiedKeyWatched {
                         EventKind::Create(CreateKind::File) | EventKind::Modify(_)
                     );
 
-                    if should_reload {
+                    let affects_source = should_reload
+                        && (ev.paths.is_empty()
+                            || ev.paths.iter().any(|changed| {
+                                let resolved_change = changed.canonicalize().ok();
+                                [&slf.key_path, &slf.cert_path].iter().any(|source| {
+                                    changed == Path::new(source.as_str())
+                                        || resolved_change.as_ref().is_some_and(|changed| {
+                                            Path::new(source.as_str())
+                                                .canonicalize()
+                                                .is_ok_and(|source| source.starts_with(changed))
+                                        })
+                                })
+                            }));
+                    if affects_source {
                         match Self::try_load(&slf.key_path, &slf.cert_path) {
                             Ok(ck) => {
-                                info!("Reloading TLS Key + Certificates");
-                                slf.cert_key.store(ck);
+                                // Duplicate or directory events may describe unchanged material.
+                                if slf.cert_key.load().cert != ck.cert {
+                                    slf.cert_key.store(ck);
+                                    info!("Reloading TLS Key + Certificates");
+                                }
                             }
                             Err(err) => {
                                 debug!("Error loading TLS after file watch event: {:?}", err);

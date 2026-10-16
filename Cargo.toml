@@ -38,3 +38,4 @@ aws-lc-rs = { version = "1.16.2", optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1.28.2", features = ["macros", "rt", "time"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
