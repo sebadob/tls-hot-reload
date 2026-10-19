@@ -7,6 +7,9 @@ use rustls::crypto::CryptoProvider;
 #[cfg(all(not(feature = "ring"), not(feature = "aws_lc_rs")))]
 compile_error!("You must activate either `ring` or `aws_lc_rs`");
 
+#[cfg(all(feature = "ring", feature = "aws_lc_rs"))]
+compile_error!("You must activate only one of `ring` or `aws_lc_rs`");
+
 pub use certified_key::CertifiedKeyWatched;
 pub use certified_keys::{BundleCert, CertifiedKeysWatched};
 
