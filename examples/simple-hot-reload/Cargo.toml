@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tls-hot-reload = { path = "../.." }
 
-actix-web = { version = "4", features = ["rustls-0_23"] }
+actix-web = { version = "4.17", features = ["rustls-0_23"] }
 anyhow = "1.0.98"
 rcgen = { version = "0.13", features = ["crypto"] }
 time = "0.3.47"

@@ -1,11 +1,17 @@
-## Unreleased
+## v0.4.0
 
-- Observe parent directories so repeated atomic file replacements and projected
-  Secret rotations continue to reload certificates.
-- Native watch registration now includes the containing directories. On Linux,
-  those directories require read permission. A resolver that previously worked
-  with readable files in an execute-only directory can now fail to initialize.
-  This changes filesystem permission requirements.
+Observe parent directories so repeated atomic file replacements and projected Secret rotations continue to reload
+certificates.
+
+A watch registration now includes the containing directories. On Linux, those directories require read permission. A
+resolver that previously worked with readable files in an execute-only directory can now fail to initialize. This
+changes filesystem permission requirements.
+
+There is now an alternative poll-based backend for watching files. Either via `load_server_config_polling()` or
+`CertifiedKeyWatched::new_polling()`. This is useful when you have your certs on e.g. NFS where the kernel cannot send
+`inotify` events.
+
+Bumps `rustls` dependencies to mitigate some security vulnerabilities.
 
 ## v0.3.0
 

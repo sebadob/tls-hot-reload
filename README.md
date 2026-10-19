@@ -8,19 +8,18 @@ directly inside a `rustls::ServerConfig` as a certificate resolver. When you cre
 automatically spawns file watchers in the background that listen to modifications on these files and if they notice any,
 they will try to reload TLS certificates without any interruption in service.
 
-The implementation is completely framework / server agnostic and works anywhere, where you can provide a
+The implementation is completely framework / server agnostic and works anywhere where you can provide a
 `rustls::ServerConfig`. The `tokio` dependency only exists for spawning background tasks and async file access.
 
 In the most simple form, the only thing you need to do is:
 
-```rust
-let tls_config =
-tls_hot_reload::load_server_config("tls/key.pem".to_string(), "tls/cert.pem".to_string()).await;
+```rust,notest
+let tls_config = tls_hot_reload::load_server_config("tls/key.pem", "tls/cert.pem").await;
 ```
 
 If you want to build your own custom `ServerConfig`, you can create the `CertifiedKeyWatched` directly:
 
-```rust
+```rust,notest
 let ck = CertifiedKeyWatched::new(key_path, cert_path).await?;
 ServerConfig::builder().with_no_client_auth().with_cert_resolver(ck)
 ```
@@ -28,11 +27,6 @@ ServerConfig::builder().with_no_client_auth().with_cert_resolver(ck)
 You can also use `CertifiedKeysWatched::new()` to provide a `Vec<BundleCert>` of certificates / paths which then will be
 resolved via SNI from the `ClientHello`.
 
-### Filesystem permissions for atomic replacement
-
-The resolver registers native watches on both files and their containing
-parent directories. On Linux the directories must be readable in addition to
-allowing access to the key and certificate. Registration errors are returned by
-`CertifiedKeyWatched::new`. This adds a permission requirement compared with
-file-only watching. It does not add support for filesystems that do not deliver
-native change notifications.
+> If you have your certs on e.g. an NFS backend, the default watcher will not work, since the kernel cannot provide
+> proper `inotify` events. In that case, you should use the `PollWatcher` backend via either
+> `load_server_config_polling()` or `CertifiedKeyWatched::new_polling()`.

@@ -63,8 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     // This command is usually all you need, as long as you don't want to create a custom server
     // config.
-    let tls_config =
-        tls_hot_reload::load_server_config(PATH_KEY.to_string(), PATH_CERT.to_string()).await;
+    let tls_config = tls_hot_reload::load_server_config(PATH_KEY, PATH_CERT).await;
 
     HttpServer::new(|| App::new().service(web::resource("/").to(index)))
         .bind_rustls_0_23(("localhost", 8443), tls_config)?
