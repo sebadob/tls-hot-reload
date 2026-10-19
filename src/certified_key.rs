@@ -1,30 +1,47 @@
 use crate::error::Error;
 use arc_swap::ArcSwap;
 use notify::event::CreateKind;
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode, Watcher};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject;
+use std::fmt::{Debug, Formatter};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task;
 use tracing::{debug, error, info};
 
-/// A TLS Key / Certificate combination created from files. The files are automatically watched and
-/// the internal TLS data will be rebuilt automatically, if a new matching key + cert has been
-/// found. This makes any server using `rustls` capable of hot-reloading certificates without any
-/// other modification.
-#[derive(Debug)]
+/// A TLS Key / Certificate combination created from files. The files are automatically watched, and
+/// the internal TLS data will be rebuilt automatically if a new matching key + cert was found. This
+/// makes any server using `rustls` capable of hot-reloading certificates without any other
+/// modification.
 pub struct CertifiedKeyWatched {
     key_path: String,
     cert_path: String,
     cert_key: ArcSwap<CertifiedKey>,
-    watcher: Mutex<Option<RecommendedWatcher>>,
+    watcher: Mutex<Option<KeyWatcher>>,
+}
+
+#[allow(unused)]
+enum KeyWatcher {
+    INotify(notify::INotifyWatcher),
+    Poll(notify::PollWatcher),
+}
+
+impl Debug for CertifiedKeyWatched {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CertifiedKeyWatched {{ key_path: {}, cert_path: {}, cert_key: {:?} }}",
+            self.key_path, self.cert_path, self.cert_key
+        )
+    }
 }
 
 impl Drop for CertifiedKeyWatched {
@@ -51,10 +68,40 @@ impl CertifiedKeyWatched {
 
     /// Load a key/certificate pair and register native file and directory watches.
     ///
-    /// Both containing directories must permit watch registration. On Linux this
-    /// requires directory read access even when the files themselves are readable.
-    /// Failure to register any required watch is returned to the caller.
+    /// Both containing directories must permit watch registration. On Linux this requires directory
+    /// read access even when the files themselves are readable. Failure to register any required
+    /// watch is returned to the caller.
     pub async fn new<K, C>(key_path: K, cert_path: C) -> Result<Arc<Self>, Error>
+    where
+        K: Into<String>,
+        C: Into<String>,
+    {
+        Self::new_with(key_path, cert_path, None).await
+    }
+
+    /// Load a key/certificate pair and register native file and directory watches.
+    ///
+    /// This runs a polling watcher in the background. This may be used in situations like when NFA
+    /// is your backend, since Linux cannot forward `inotify` events properly in that case. In
+    /// comparison to the default watcher, this will not detect changes instantly, but depending on
+    /// the given `poll_interval`.
+    pub async fn new_polling<K, C>(
+        key_path: K,
+        cert_path: C,
+        poll_interval: Duration,
+    ) -> Result<Arc<Self>, Error>
+    where
+        K: Into<String>,
+        C: Into<String>,
+    {
+        Self::new_with(key_path, cert_path, Some(poll_interval)).await
+    }
+
+    async fn new_with<K, C>(
+        key_path: K,
+        cert_path: C,
+        poll_interval: Option<Duration>,
+    ) -> Result<Arc<Self>, Error>
     where
         K: Into<String>,
         C: Into<String>,
@@ -74,7 +121,7 @@ impl CertifiedKeyWatched {
             watcher: Mutex::new(None),
         });
 
-        let watcher = Self::watch_files(slf.clone())?;
+        let watcher = Self::watch_files(slf.clone(), poll_interval)?;
         *slf.watcher.lock().await = Some(watcher);
 
         Ok(slf)
@@ -120,7 +167,7 @@ impl CertifiedKeyWatched {
         Ok(Arc::new(ck))
     }
 
-    fn watch_files(slf: Arc<Self>) -> Result<RecommendedWatcher, Error> {
+    fn watch_files(slf: Arc<Self>, poll_interval: Option<Duration>) -> Result<KeyWatcher, Error> {
         let key_path = slf.key_path.clone();
         let cert_path = slf.cert_path.clone();
 
@@ -128,57 +175,6 @@ impl CertifiedKeyWatched {
         // struct -> watcher -> callback -> Arc<struct>, preventing the last caller
         // from ever dropping us (and with it this watcher).
         let weak = Arc::downgrade(&slf);
-
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                // Once the last strong reference is gone, stop processing events.
-                let Some(slf) = weak.upgrade() else {
-                    return;
-                };
-
-                match res {
-                    Ok(ev) => {
-                        let should_reload = matches!(
-                            ev.kind,
-                            EventKind::Create(CreateKind::File) | EventKind::Modify(_)
-                        );
-
-                        let affects_source = should_reload
-                            && (ev.paths.is_empty()
-                                || ev.paths.iter().any(|changed| {
-                                    let resolved_change = changed.canonicalize().ok();
-                                    [&slf.key_path, &slf.cert_path].iter().any(|source| {
-                                        changed == Path::new(source.as_str())
-                                            || resolved_change.as_ref().is_some_and(|changed| {
-                                                Path::new(source.as_str())
-                                                    .canonicalize()
-                                                    .is_ok_and(|source| source.starts_with(changed))
-                                            })
-                                    })
-                                }));
-                        if affects_source {
-                            match Self::try_load(&slf.key_path, &slf.cert_path) {
-                                Ok(ck) => {
-                                    // Duplicate or directory events may describe unchanged material.
-                                    if slf.cert_key.load().cert != ck.cert {
-                                        slf.cert_key.store(ck);
-                                        info!("Reloading TLS Key + Certificates");
-                                    }
-                                }
-                                Err(err) => {
-                                    debug!("Error loading TLS after file watch event: {:?}", err);
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        error!("File watch error: {:?}", err);
-                    }
-                }
-            })?;
-
-        watcher.watch(Path::new(&key_path), RecursiveMode::NonRecursive)?;
-        watcher.watch(Path::new(&cert_path), RecursiveMode::NonRecursive)?;
 
         // Atomic replacements can detach file watches from the current inode.
         // Parent watches also observe Kubernetes projected Secret symlink swaps.
@@ -190,12 +186,85 @@ impl CertifiedKeyWatched {
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        watcher.watch(key_parent, RecursiveMode::NonRecursive)?;
-        if cert_parent != key_parent {
-            watcher.watch(cert_parent, RecursiveMode::NonRecursive)?;
-        }
 
-        Ok(watcher)
+        let watch_files = |watcher: &mut dyn Watcher| {
+            watcher.watch(Path::new(&key_path), RecursiveMode::NonRecursive)?;
+            watcher.watch(Path::new(&cert_path), RecursiveMode::NonRecursive)?;
+            watcher.watch(key_parent, RecursiveMode::NonRecursive)?;
+            if cert_parent != key_parent {
+                watcher.watch(cert_parent, RecursiveMode::NonRecursive)?;
+            }
+            Ok::<_, Error>(())
+        };
+
+        if let Some(interval) = poll_interval {
+            let mut watcher = notify::poll::PollWatcher::new(
+                move |res| {
+                    let Some(slf) = weak.upgrade() else {
+                        return;
+                    };
+                    Self::handle_watch_event(slf, res);
+                },
+                notify::Config::default().with_poll_interval(interval),
+            )?;
+            watch_files(&mut watcher)?;
+            Ok(KeyWatcher::Poll(watcher))
+        } else {
+            let mut watcher = notify::inotify::INotifyWatcher::new(
+                move |res| {
+                    // Once the last strong reference is gone, stop processing events.
+                    let Some(slf) = weak.upgrade() else {
+                        return;
+                    };
+                    Self::handle_watch_event(slf, res);
+                },
+                notify::Config::default(),
+            )?;
+            watch_files(&mut watcher)?;
+            Ok(KeyWatcher::INotify(watcher))
+        }
+    }
+
+    fn handle_watch_event(slf: Arc<Self>, res: notify::Result<notify::Event>) {
+        match res {
+            Ok(ev) => {
+                let should_reload = matches!(
+                    ev.kind,
+                    EventKind::Create(CreateKind::File) | EventKind::Modify(_)
+                );
+
+                let affects_source = should_reload
+                    && (ev.paths.is_empty()
+                        || ev.paths.iter().any(|changed| {
+                            let resolved_change = changed.canonicalize().ok();
+                            [&slf.key_path, &slf.cert_path].iter().any(|source| {
+                                changed == Path::new(source.as_str())
+                                    || resolved_change.as_ref().is_some_and(|changed| {
+                                        Path::new(source.as_str())
+                                            .canonicalize()
+                                            .is_ok_and(|source| source.starts_with(changed))
+                                    })
+                            })
+                        }));
+                if affects_source {
+                    match Self::try_load(&slf.key_path, &slf.cert_path) {
+                        Ok(ck) => {
+                            // Duplicate or directory events may describe unchanged material.
+                            if slf.cert_key.load().cert != ck.cert {
+                                slf.cert_key.store(ck);
+                                info!("Reloading TLS Key + Certificates");
+                            }
+                        }
+                        Err(err) => {
+                            debug!("Error loading TLS after file watch event: {:?}", err);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                error!("File watch error: {:?}", err);
+            }
+        }
     }
 }
 

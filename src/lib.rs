@@ -1,8 +1,9 @@
-// Copyright 2025 Sebastian Dobe <sebastiandobe@mailbox.org>
+// Copyright 2026 Sebastian Dobe <sebastiandobe@mailbox.org>
 
 #![forbid(unsafe_code)]
 
 use rustls::crypto::CryptoProvider;
+use std::time::Duration;
 
 #[cfg(all(not(feature = "ring"), not(feature = "aws_lc_rs")))]
 compile_error!("You must activate either `ring` or `aws_lc_rs`");
@@ -32,10 +33,40 @@ pub mod error;
 /// # Panics
 ///
 /// If the given paths or key + cert combination is invalid.
-pub async fn load_server_config(key_path: String, cert_path: String) -> rustls::ServerConfig {
+pub async fn load_server_config<K, C>(key_path: K, cert_path: C) -> rustls::ServerConfig
+where
+    K: Into<String>,
+    C: Into<String>,
+{
     install_crypto_provider();
 
-    let ck = match certified_key::CertifiedKeyWatched::new(key_path, cert_path).await {
+    let ck = match CertifiedKeyWatched::new(key_path, cert_path).await {
+        Ok(ck) => ck,
+        Err(err) => {
+            panic!("Cannot load TLS certificates: {:?}", err)
+        }
+    };
+
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(ck)
+}
+
+/// The same as `load_server_config`, but will use a polling file watcher as the backend. This will
+/// detect changes not instantly, but fix issues on filesystems like NFS, where `inotify` event do
+/// not work.
+pub async fn load_server_config_polling<K, C>(
+    key_path: K,
+    cert_path: C,
+    poll_interval: Duration,
+) -> rustls::ServerConfig
+where
+    K: Into<String>,
+    C: Into<String>,
+{
+    install_crypto_provider();
+
+    let ck = match CertifiedKeyWatched::new_polling(key_path, cert_path, poll_interval).await {
         Ok(ck) => ck,
         Err(err) => {
             panic!("Cannot load TLS certificates: {:?}", err)
@@ -50,13 +81,12 @@ pub async fn load_server_config(key_path: String, cert_path: String) -> rustls::
 /// Checks if the `rustls::CryptoProvider` is already installed and installs it, if not.
 pub fn install_crypto_provider() {
     if CryptoProvider::get_default().is_none() {
+        // A failure here can only happen during a race condition, e.g. from inside tests, or when
+        // a user initializes multiple single keys concurrently. We don't care if that fails, since
+        // they would all be the same provider anyway.
         #[cfg(feature = "ring")]
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("Cannot install rustls crypto provider");
+        let _ = rustls::crypto::ring::default_provider().install_default();
         #[cfg(feature = "aws_lc_rs")]
-        rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .expect("Cannot install rustls crypto provider");
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     }
 }
