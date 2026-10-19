@@ -27,6 +27,8 @@ check:
 
     cd ../..
 
+    cargo test
+
 # verifies the MSRV
 msrv-verify:
     cargo msrv verify
