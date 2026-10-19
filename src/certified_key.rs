@@ -27,6 +27,15 @@ pub struct CertifiedKeyWatched {
     watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
+impl Drop for CertifiedKeyWatched {
+    fn drop(&mut self) {
+        // Synchronously stop the file watcher so its event thread exits with us.
+        // `get_mut` is safe here: the only other lock holder was `new()`, which
+        // released the guard long before this point.
+        let _ = self.watcher.get_mut().take();
+    }
+}
+
 impl ResolvesServerCert for CertifiedKeyWatched {
     #[inline(always)]
     fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
@@ -45,7 +54,14 @@ impl CertifiedKeyWatched {
     /// Both containing directories must permit watch registration. On Linux this
     /// requires directory read access even when the files themselves are readable.
     /// Failure to register any required watch is returned to the caller.
-    pub async fn new(key_path: String, cert_path: String) -> Result<Arc<Self>, Error> {
+    pub async fn new<K, C>(key_path: K, cert_path: C) -> Result<Arc<Self>, Error>
+    where
+        K: Into<String>,
+        C: Into<String>,
+    {
+        let key_path = key_path.into();
+        let cert_path = cert_path.into();
+
         let kp_cloned = key_path.clone();
         let cp_cloned = cert_path.clone();
         let cert_key =
@@ -108,44 +124,56 @@ impl CertifiedKeyWatched {
         let key_path = slf.key_path.clone();
         let cert_path = slf.cert_path.clone();
 
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
-                Ok(ev) => {
-                    let should_reload = matches!(
-                        ev.kind,
-                        EventKind::Create(CreateKind::File) | EventKind::Modify(_)
-                    );
+        // Capture only a weak reference: a strong `Arc` here would form the cycle
+        // struct -> watcher -> callback -> Arc<struct>, preventing the last caller
+        // from ever dropping us (and with it this watcher).
+        let weak = Arc::downgrade(&slf);
 
-                    let affects_source = should_reload
-                        && (ev.paths.is_empty()
-                            || ev.paths.iter().any(|changed| {
-                                let resolved_change = changed.canonicalize().ok();
-                                [&slf.key_path, &slf.cert_path].iter().any(|source| {
-                                    changed == Path::new(source.as_str())
-                                        || resolved_change.as_ref().is_some_and(|changed| {
-                                            Path::new(source.as_str())
-                                                .canonicalize()
-                                                .is_ok_and(|source| source.starts_with(changed))
-                                        })
-                                })
-                            }));
-                    if affects_source {
-                        match Self::try_load(&slf.key_path, &slf.cert_path) {
-                            Ok(ck) => {
-                                // Duplicate or directory events may describe unchanged material.
-                                if slf.cert_key.load().cert != ck.cert {
-                                    slf.cert_key.store(ck);
-                                    info!("Reloading TLS Key + Certificates");
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                // Once the last strong reference is gone, stop processing events.
+                let Some(slf) = weak.upgrade() else {
+                    return;
+                };
+
+                match res {
+                    Ok(ev) => {
+                        let should_reload = matches!(
+                            ev.kind,
+                            EventKind::Create(CreateKind::File) | EventKind::Modify(_)
+                        );
+
+                        let affects_source = should_reload
+                            && (ev.paths.is_empty()
+                                || ev.paths.iter().any(|changed| {
+                                    let resolved_change = changed.canonicalize().ok();
+                                    [&slf.key_path, &slf.cert_path].iter().any(|source| {
+                                        changed == Path::new(source.as_str())
+                                            || resolved_change.as_ref().is_some_and(|changed| {
+                                                Path::new(source.as_str())
+                                                    .canonicalize()
+                                                    .is_ok_and(|source| source.starts_with(changed))
+                                            })
+                                    })
+                                }));
+                        if affects_source {
+                            match Self::try_load(&slf.key_path, &slf.cert_path) {
+                                Ok(ck) => {
+                                    // Duplicate or directory events may describe unchanged material.
+                                    if slf.cert_key.load().cert != ck.cert {
+                                        slf.cert_key.store(ck);
+                                        info!("Reloading TLS Key + Certificates");
+                                    }
                                 }
-                            }
-                            Err(err) => {
-                                debug!("Error loading TLS after file watch event: {:?}", err);
+                                Err(err) => {
+                                    debug!("Error loading TLS after file watch event: {:?}", err);
+                                }
                             }
                         }
                     }
-                }
-                Err(err) => {
-                    error!("File watch error: {:?}", err);
+                    Err(err) => {
+                        error!("File watch error: {:?}", err);
+                    }
                 }
             })?;
 
@@ -175,6 +203,10 @@ impl CertifiedKeyWatched {
 mod tests {
     use super::*;
     use crate::install_crypto_provider;
+    use std::os::unix::fs::symlink;
+    use std::sync::Once;
+    use std::time::Duration;
+    use tokio::time::{Instant, sleep};
 
     #[test]
     fn load_der() {
@@ -193,5 +225,119 @@ mod tests {
         let ck = CertifiedKeyWatched::try_load("test_data/key.pem", "test_data/certs.pem").unwrap();
         ck.keys_match().unwrap();
         assert_eq!(ck.cert.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn key_drop_terminates_watcher() {
+        install_crypto_provider();
+
+        let resolver = CertifiedKeyWatched::new("test_data/key.pem", "test_data/certs.pem")
+            .await
+            .unwrap();
+        let weak = Arc::downgrade(&resolver);
+        drop(resolver);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            weak.upgrade().is_none(),
+            "resolver retained after caller dropped it"
+        );
+    }
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    const KEY: &[u8] = include_bytes!("../test_data/key.pem");
+    const CERTS: [&[u8]; 3] = [
+        include_bytes!("../test_data/certs.pem"),
+        include_bytes!("../test_data/reload-a.pem"),
+        include_bytes!("../test_data/reload-b.pem"),
+    ];
+
+    static CRYPTO: Once = Once::new();
+
+    fn write_pair(directory: &Path, cert: &[u8]) -> TestResult {
+        fs::create_dir_all(directory)?;
+        fs::write(directory.join("tls.key"), KEY)?;
+        fs::write(directory.join("tls.crt"), cert)?;
+        Ok(())
+    }
+
+    async fn reader(
+        directory: &Path,
+    ) -> Result<std::sync::Arc<CertifiedKeyWatched>, Box<dyn std::error::Error>> {
+        CRYPTO.call_once(crate::install_crypto_provider);
+        Ok(CertifiedKeyWatched::new(
+            directory.join("tls.key").to_string_lossy().into_owned(),
+            directory.join("tls.crt").to_string_lossy().into_owned(),
+        )
+        .await?)
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Replacement {
+        Projected,
+        Atomic,
+        InPlace,
+    }
+
+    async fn check_replacements(replacement: Replacement) -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let mounted = tmp.path().join("mounted");
+        fs::create_dir(&mounted)?;
+
+        if matches!(replacement, Replacement::Projected) {
+            write_pair(&mounted.join("revision-0"), CERTS[0])?;
+            symlink("revision-0", mounted.join("..data"))?;
+            symlink("..data/tls.key", mounted.join("tls.key"))?;
+            symlink("..data/tls.crt", mounted.join("tls.crt"))?;
+        } else {
+            write_pair(&mounted, CERTS[0])?;
+        }
+
+        let watched = reader(&mounted).await?;
+        let initial = watched.cloned().cert[0].clone();
+        for (revision, cert) in CERTS.iter().enumerate().skip(1) {
+            let expected = CertificateDer::pem_slice_iter(cert)
+                .next()
+                .ok_or("missing test certificate")??;
+            assert_ne!(initial, expected);
+
+            if matches!(replacement, Replacement::Projected) {
+                write_pair(&mounted.join(format!("revision-{revision}")), cert)?;
+                symlink(format!("revision-{revision}"), mounted.join("..data_tmp"))?;
+                fs::rename(mounted.join("..data_tmp"), mounted.join("..data"))?;
+                fs::remove_dir_all(mounted.join(format!("revision-{}", revision - 1)))?;
+            } else if matches!(replacement, Replacement::Atomic) {
+                fs::write(mounted.join("tls.crt.tmp"), cert)?;
+                fs::rename(mounted.join("tls.crt.tmp"), mounted.join("tls.crt"))?;
+            } else {
+                fs::write(mounted.join("tls.crt"), cert)?;
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while watched.cloned().cert[0] != expected && Instant::now() < deadline {
+                sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                watched.cloned().cert[0],
+                expected,
+                "certificate revision {revision} was not loaded ({replacement:?})"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reloads_after_two_projected_secret_rotations() -> TestResult {
+        check_replacements(Replacement::Projected).await
+    }
+
+    #[tokio::test]
+    async fn reloads_after_two_atomic_file_replacements() -> TestResult {
+        check_replacements(Replacement::Atomic).await
+    }
+
+    #[tokio::test]
+    async fn preserves_in_place_certificate_reloading() -> TestResult {
+        check_replacements(Replacement::InPlace).await
     }
 }
