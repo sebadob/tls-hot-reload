@@ -27,3 +27,12 @@ ServerConfig::builder().with_no_client_auth().with_cert_resolver(ck)
 
 You can also use `CertifiedKeysWatched::new()` to provide a `Vec<BundleCert>` of certificates / paths which then will be
 resolved via SNI from the `ClientHello`.
+
+### Filesystem permissions for atomic replacement
+
+The resolver registers native watches on both files and their containing
+parent directories. On Linux the directories must be readable in addition to
+allowing access to the key and certificate. Registration errors are returned by
+`CertifiedKeyWatched::new`. This adds a permission requirement compared with
+file-only watching. It does not add support for filesystems that do not deliver
+native change notifications.

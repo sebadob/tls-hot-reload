@@ -40,6 +40,11 @@ impl CertifiedKeyWatched {
         self.cert_key.load_full()
     }
 
+    /// Load a key/certificate pair and register native file and directory watches.
+    ///
+    /// Both containing directories must permit watch registration. On Linux this
+    /// requires directory read access even when the files themselves are readable.
+    /// Failure to register any required watch is returned to the caller.
     pub async fn new(key_path: String, cert_path: String) -> Result<Arc<Self>, Error> {
         let kp_cloned = key_path.clone();
         let cp_cloned = cert_path.clone();
@@ -111,11 +116,27 @@ impl CertifiedKeyWatched {
                         EventKind::Create(CreateKind::File) | EventKind::Modify(_)
                     );
 
-                    if should_reload {
+                    let affects_source = should_reload
+                        && (ev.paths.is_empty()
+                            || ev.paths.iter().any(|changed| {
+                                let resolved_change = changed.canonicalize().ok();
+                                [&slf.key_path, &slf.cert_path].iter().any(|source| {
+                                    changed == Path::new(source.as_str())
+                                        || resolved_change.as_ref().is_some_and(|changed| {
+                                            Path::new(source.as_str())
+                                                .canonicalize()
+                                                .is_ok_and(|source| source.starts_with(changed))
+                                        })
+                                })
+                            }));
+                    if affects_source {
                         match Self::try_load(&slf.key_path, &slf.cert_path) {
                             Ok(ck) => {
-                                info!("Reloading TLS Key + Certificates");
-                                slf.cert_key.store(ck);
+                                // Duplicate or directory events may describe unchanged material.
+                                if slf.cert_key.load().cert != ck.cert {
+                                    slf.cert_key.store(ck);
+                                    info!("Reloading TLS Key + Certificates");
+                                }
                             }
                             Err(err) => {
                                 debug!("Error loading TLS after file watch event: {:?}", err);
@@ -130,6 +151,21 @@ impl CertifiedKeyWatched {
 
         watcher.watch(Path::new(&key_path), RecursiveMode::NonRecursive)?;
         watcher.watch(Path::new(&cert_path), RecursiveMode::NonRecursive)?;
+
+        // Atomic replacements can detach file watches from the current inode.
+        // Parent watches also observe Kubernetes projected Secret symlink swaps.
+        let key_parent = Path::new(&key_path)
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let cert_parent = Path::new(&cert_path)
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        watcher.watch(key_parent, RecursiveMode::NonRecursive)?;
+        if cert_parent != key_parent {
+            watcher.watch(cert_parent, RecursiveMode::NonRecursive)?;
+        }
 
         Ok(watcher)
     }
