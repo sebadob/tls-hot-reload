@@ -11,8 +11,6 @@ There is now an alternative poll-based backend for watching files. Either via `l
 `CertifiedKeyWatched::new_polling()`. This is useful when you have your certs on e.g. NFS where the kernel cannot send
 `inotify` events.
 
-Bumps `rustls` dependencies to mitigate some security vulnerabilities.
-
 ## v0.3.0
 
 Bumps `aws-lc` dependencies to mitigate some security vulnerabilities.
