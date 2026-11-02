@@ -30,7 +30,7 @@ pub struct CertifiedKeyWatched {
 
 #[allow(unused)]
 enum KeyWatcher {
-    INotify(notify::INotifyWatcher),
+    RecommendedWatcher(notify::RecommendedWatcher),
     Poll(notify::PollWatcher),
 }
 
@@ -210,7 +210,7 @@ impl CertifiedKeyWatched {
             watch_files(&mut watcher)?;
             Ok(KeyWatcher::Poll(watcher))
         } else {
-            let mut watcher = notify::inotify::INotifyWatcher::new(
+            let mut watcher = notify::RecommendedWatcher::new(
                 move |res| {
                     // Once the last strong reference is gone, stop processing events.
                     let Some(slf) = weak.upgrade() else {
@@ -221,7 +221,7 @@ impl CertifiedKeyWatched {
                 notify::Config::default(),
             )?;
             watch_files(&mut watcher)?;
-            Ok(KeyWatcher::INotify(watcher))
+            Ok(KeyWatcher::RecommendedWatcher(watcher))
         }
     }
 
